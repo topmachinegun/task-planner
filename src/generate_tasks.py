@@ -173,6 +173,7 @@ def collect_customer_snapshot(cli: MCPClient, project: dict) -> dict:
 
 def check_stale(project: dict) -> dict | None:
     """检查项目是否长期未跟进（>14天）。返回 None 表示正常，返回 dict 表示需创建的任务描述。"""
+    project_name = _row_title(project)
     last_followup = _field_val(project, PROJECT_LAST_FOLLOWUP_FIELD)
     if not last_followup:
         return None
