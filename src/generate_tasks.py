@@ -134,6 +134,7 @@ def collect_customer_snapshot(cli: MCPClient, project: dict) -> dict:
         "project": project_name,
         "row_id": project.get("rowId") or project.get("rowid") or "",
         "company_name": str(company_name).strip() if company_name else "",
+        "owner_ids": get_project_owner_ids(project),
         "has_customer_record": False,
         "customer_name": "",
         "contacts": [],
