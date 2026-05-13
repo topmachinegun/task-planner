@@ -204,17 +204,7 @@ def check_customer_info(cli: MCPClient, project: dict) -> dict | None:
                         "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
                         "source_section": "场景一：客户信息缺失（联系人）",
                     }
-    else:
-        # 没有客户档案关联，但可能有公司名称 → 需补录联系人
-        if has_company_name:
-            return {
-                "reason": "联系人缺失",
-                "detail": "项目有公司名称但未关联客户档案，无联系人记录",
-                "task_name": f"{project_name} - 创建客户档案并补录联系人",
-                "task_type": "客户背景调查",
-                "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
-                "source_section": "场景一：客户信息缺失（客户档案）",
-            }
+    # 有公司名称但无客户档案：线索阶段正常现象，不报缺口
     return None
 
 
