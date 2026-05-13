@@ -144,6 +144,17 @@ def check_customer_info(cli: MCPClient, project: dict) -> dict | None:
             "source_section": "场景一：客户信息缺失（客户档案）",
         }
 
+    # 1b. 项目公司名称为空（无论是否关联客户档案）
+    if not has_company_name:
+        return {
+            "reason": "公司名称缺失",
+            "detail": "项目「公司名称」字段为空，无法确定客户主体",
+            "task_name": f"{project_name} - 完善联系人信息",
+            "task_type": "客户背景调查",
+            "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
+            "source_section": "场景一：客户信息缺失（公司名称）",
+        }
+
     # 2. 检查客户档案中的联系人
     if has_customer_record:
         customer_row_id = None
