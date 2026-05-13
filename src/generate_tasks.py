@@ -124,39 +124,23 @@ def _field_val(record: dict, field_id: str) -> Any:
     return None
 
 
-def check_customer_info(cli: MCPClient, project: dict) -> dict | None:
-    """检查客户信息完整性。返回 None 表示完整，返回 dict 表示需创建的任务描述。"""
+def collect_customer_snapshot(cli: MCPClient, project: dict) -> dict:
+    """收集客户信息快照，供智能体做语义判断。不做二元判断。"""
     project_name = _row_title(project)
-    customer_rel = _field_val(project, PROJECT_CUSTOMER_FIELD)
     company_name = _field_val(project, PROJECT_COMPANY_FIELD)
+    customer_rel = _field_val(project, PROJECT_CUSTOMER_FIELD)
 
-    # 1. 公司名称检查
-    has_customer_record = bool(customer_rel and isinstance(customer_rel, list) and customer_rel)
-    has_company_name = bool(company_name and str(company_name).strip())
+    snapshot: dict = {
+        "project": project_name,
+        "row_id": project.get("rowId") or project.get("rowid") or "",
+        "company_name": str(company_name).strip() if company_name else "",
+        "has_customer_record": False,
+        "customer_name": "",
+        "contacts": [],
+    }
 
-    if not has_customer_record and not has_company_name:
-        return {
-            "reason": "公司信息缺失",
-            "detail": "项目未关联客户档案，且线索信息中无公司名称",
-            "task_name": f"{project_name} - 创建客户档案并补录联系人",
-            "task_type": "客户背景调查",
-            "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
-            "source_section": "场景一：客户信息缺失（客户档案）",
-        }
-
-    # 1b. 项目公司名称为空（无论是否关联客户档案）
-    if not has_company_name:
-        return {
-            "reason": "公司名称缺失",
-            "detail": "项目「公司名称」字段为空，无法确定客户主体",
-            "task_name": f"{project_name} - 完善联系人信息",
-            "task_type": "客户背景调查",
-            "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
-            "source_section": "场景一：客户信息缺失（公司名称）",
-        }
-
-    # 2. 检查客户档案中的联系人
-    if has_customer_record:
+    if customer_rel and isinstance(customer_rel, list) and customer_rel:
+        snapshot["has_customer_record"] = True
         customer_row_id = None
         for item in customer_rel:
             if isinstance(item, dict):
@@ -171,52 +155,20 @@ def check_customer_info(cli: MCPClient, project: dict) -> dict | None:
                 "worksheet_id": CUSTOMER_WS_ID,
                 "row_id": customer_row_id,
                 "appId": APP_ID,
-                "ai_description": ai_desc("Get customer details for info completeness check."),
+                "ai_description": ai_desc("Collect customer snapshot for semantic review."),
             })
             if isinstance(customer, dict):
-                # 检查客户全称
                 cust_name = _field_val(customer, CUSTOMER_NAME_FIELD)
-                if not cust_name or not str(cust_name).strip():
-                    return {
-                        "reason": "客户全称缺失",
-                        "detail": "客户档案中客户全称为空",
-                        "task_name": f"{project_name} - 完善联系人信息",
-                        "task_type": "客户背景调查",
-                        "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
-                        "source_section": "场景一：客户信息缺失（客户全称）",
-                    }
-                # 检查联系人子表
+                snapshot["customer_name"] = str(cust_name).strip() if cust_name else ""
                 contacts = _field_val(customer, CUSTOMER_CONTACTS_FIELD)
-                if isinstance(contacts, list) and contacts:
-                    # 联系人存在，检查姓名和职务
-                    has_valid_contact = False
+                if isinstance(contacts, list):
                     for c in contacts:
                         if isinstance(c, dict):
-                            contact_name = c.get("姓名") or c.get("name") or ""
-                            contact_title = c.get("职务") or c.get("title") or ""
-                            if contact_name.strip() and contact_title.strip():
-                                has_valid_contact = True
-                                break
-                    if not has_valid_contact:
-                        return {
-                            "reason": "联系人信息不完整",
-                            "detail": "客户档案联系人子表存在，但姓名或职务缺失",
-                            "task_name": f"{project_name} - 完善联系人信息",
-                            "task_type": "客户背景调查",
-                            "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
-                            "source_section": "场景一：客户信息缺失（联系人）",
-                        }
-                else:
-                    return {
-                        "reason": "联系人缺失",
-                        "detail": "客户档案中无联系人记录",
-                        "task_name": f"{project_name} - 完善联系人信息",
-                        "task_type": "客户背景调查",
-                        "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
-                        "source_section": "场景一：客户信息缺失（联系人）",
-                    }
-    # 有公司名称但无客户档案：线索阶段正常现象，不报缺口
-    return None
+                            snapshot["contacts"].append({
+                                "name": str(c.get("姓名") or c.get("name") or "").strip(),
+                                "title": str(c.get("职务") or c.get("title") or "").strip(),
+                            })
+    return snapshot
 
 
 def check_stale(project: dict) -> dict | None:
@@ -414,6 +366,7 @@ def main() -> int:
     # S4 处理每个项目
     all_tasks: list[dict] = []
     skipped: list[dict] = []
+    customer_snapshots: list[dict] = []
 
     for project in projects:
         project_name = _row_title(project)
@@ -436,17 +389,12 @@ def main() -> int:
             skipped.append({"project": project_name, "reason": f"状态={status_key}，非跟进中"})
             continue
 
-        # 场景一：客户信息检查
-        info_gap = check_customer_info(cli, project)
-        if info_gap:
-            diag(f"  [info] {info_gap['reason']}: {info_gap['detail']}")
-            result = create_task(cli, project, info_gap, args.dry_run)
-            all_tasks.append(result)
-        else:
-            diag(f"  [info] 客户信息完整")
-            skipped.append({"project": project_name, "scenario": "info", "reason": "信息完整"})
+        # 场景一：收集客户信息快照（由智能体做语义判断）
+        snapshot = collect_customer_snapshot(cli, project)
+        customer_snapshots.append(snapshot)
+        diag(f"  [snapshot] company={snapshot['company_name']}, customer={snapshot['customer_name']}, contacts={len(snapshot['contacts'])}")
 
-        # 场景二：项目搁置检测（>14天未更新）
+        # 场景二：项目搁置检测（>14天未更新，规则可自动判断）
         stale_gap = check_stale(project)
         if stale_gap:
             diag(f"  [stale] {stale_gap['reason']}: {stale_gap['detail']}")
@@ -460,8 +408,9 @@ def main() -> int:
         "ok": True,
         "dry_run": args.dry_run,
         "projects_scanned": len(projects),
-        "tasks_created": len(all_tasks),
-        "tasks": all_tasks,
+        "customer_snapshots": customer_snapshots,
+        "stale_tasks_created": len(all_tasks),
+        "stale_tasks": all_tasks,
         "skipped": skipped,
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
