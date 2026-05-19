@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """generate_tasks.py — 项目任务自动生成。
 
-两种触发场景：
-  场景一：跟进中项目 + 客户/联系人信息不完整 → 创建「客户背景调查」任务
-  场景二：项目最后跟进超过 14 天 → 创建「项目搁置跟进」任务
+三种触发场景：
+  场景一：跟进中项目 + 客户/联系人信息不完整 → 智能体语义判断后创建「客户背景调查」任务
+  场景二：项目最后跟进超过 14 天 → 创建「客户背景调查」任务
+  场景三：项目AI评估不为空 → 输出评估内容，智能体提取动作并映射到预设任务类型
 
 用法：
   python3 generate_tasks.py                        # 全部场景
@@ -47,6 +48,16 @@ PROJECT_LAST_FOLLOWUP_FIELD = "69d2e3d827546f97d192359f"  # 最后跟进时间
 
 # 搁置阈值（天）
 STALE_DAYS_THRESHOLD = 14
+
+# 场景三允许的任务类型 key（评估驱动，收窄为三种）
+EVAL_TASK_TYPE_KEYS = {
+    # 项目方案输出: 方案/提案/演示材料/PPT
+    "项目方案输出": "ab43d3e5-635e-46ef-aa1e-ad39c0bf062a",
+    # 客户背景调查: 背景/决策链/角色/信息
+    "客户背景调查": "382f2695-5304-4107-88a3-8151ed2a90e3",
+    # 打电话: 电话/致电/回电
+    "打电话": "93e0f6e0-adc2-40ea-9ec0-dbc37532ac5c",
+}
 
 # 客户档案字段
 CUSTOMER_NAME_FIELD = "69ca1fa0d128aadb0c749bc9"     # 客户全称
@@ -195,7 +206,40 @@ def check_stale(project: dict) -> dict | None:
         "task_name": f"{project_name} - 项目长期未更新（{days_since}天），需跟进",
         "task_type": "客户背景调查",
         "task_type_key": "382f2695-5304-4107-88a3-8151ed2a90e3",
-        "source_section": f"场景三：项目搁置（{days_since}天未更新）",
+        "source_section": f"场景二：项目搁置（{days_since}天未更新）",
+    }
+
+
+def collect_ai_evaluation(cli: MCPClient, project: dict) -> dict | None:
+    """收集项目 AI 评估内容，供智能体提取可执行动作。
+
+    get_record_list 不返回富文本字段，必须用 get_record_details。
+    返回 None 表示 AI 评估字段为空或不存在。
+    返回 dict 含 rowId/project_name/owner_ids/ai_eval_content。
+    """
+    row_id = project.get("rowId") or project.get("rowid") or ""
+    if not row_id:
+        return None
+    detail = cli.call("get_record_details", {
+        "worksheet_id": PROJECT_WS_ID,
+        "row_id": row_id,
+        "appId": APP_ID,
+        "ai_description": ai_desc("Check AI evaluation field for task generation."),
+    })
+    if not isinstance(detail, dict):
+        return None
+    ai_eval = _field_val(detail, PROJECT_AI_EVAL_FIELD)
+    if not ai_eval:
+        return None
+    eval_text = str(ai_eval).strip()
+    if not eval_text:
+        return None
+    return {
+        "project_name": _row_title(project),
+        "row_id": row_id,
+        "owner_ids": get_project_owner_ids(project),
+        "ai_eval_preview": eval_text[:300] + ("..." if len(eval_text) > 300 else ""),
+        "ai_eval_full": eval_text,
     }
 
 
@@ -226,7 +270,7 @@ def _build_task_description(task_desc: dict) -> str:
     if "场景一" in section:
         # 客户信息缺失
         desc = f"因该项目客户信息存在缺失：{detail}"
-    elif "场景二" in section or "场景三" in section:
+    elif "场景二" in section:
         # 项目搁置
         desc = f"因{reason}：{detail}，需排查原因并推动进展。"
     else:
@@ -369,6 +413,7 @@ def main() -> int:
     all_tasks: list[dict] = []
     skipped: list[dict] = []
     customer_snapshots: list[dict] = []
+    evaluated_projects: list[dict] = []
 
     for project in projects:
         project_name = _row_title(project)
@@ -396,6 +441,14 @@ def main() -> int:
         customer_snapshots.append(snapshot)
         diag(f"  [snapshot] company={snapshot['company_name']}, customer={snapshot['customer_name']}, contacts={len(snapshot['contacts'])}")
 
+        # 场景三：收集AI评估内容（由智能体提取可执行动作并映射任务类型）
+        eval_result = collect_ai_evaluation(cli, project)
+        if eval_result:
+            evaluated_projects.append(eval_result)
+            diag(f"  [eval] AI评估已存在，{len(eval_result['ai_eval_full'])} chars")
+        else:
+            diag(f"  [eval] AI评估为空，跳过")
+
         # 场景二：项目搁置检测（>14天未更新，规则可自动判断）
         stale_gap = check_stale(project)
         if stale_gap:
@@ -413,6 +466,7 @@ def main() -> int:
         "customer_snapshots": customer_snapshots,
         "stale_tasks_created": len(all_tasks),
         "stale_tasks": all_tasks,
+        "evaluated_projects": evaluated_projects,
         "skipped": skipped,
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
